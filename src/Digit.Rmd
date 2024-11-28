@@ -1,0 +1,297 @@
+---
+title: "Digit Recognizer"
+author: "Rocío Guzmán Arroyo, Rodrigo Carreira Villalta, Adrián Pradas Gallardo y Alberto Sánzhez Aparicio"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Digit Recognizer
+
+Antes de comenzar el trábajo instalaremos todas las librerias
+necesarias.
+
+#### Librerías
+
+```{r}
+library(readr)
+library(dplyr)
+library(rattle)  
+library(nnet)
+library(caret)
+library(kernlab)  
+library(randomForest)
+library(e1071) # SVM
+library(adabag) # Bagging
+library(class)  # KNN
+library(rpart)
+library(rpart.plot)
+library(xgboost)  # XGBoost
+library(Metrics)  # Para métricas adicionales
+library(ipred)
+```
+
+Este proyecto analiza el reconocimiento de dígitos usando múltiples
+algoritmos de aprendizaje supervisado:
+
+Árboles de decisión, bosques aleatorios, SVM, bagging y boosting.La
+calidad de los modelos se evalúa mediante matrices de confusión y
+precisión.
+
+#### Primeramente cargamos los datos
+
+```{r}
+digit <- read_csv("train.csv")
+test <- read.csv("test.csv")
+digit <- digit[1:5000, ]
+test <- test[1:5000, ]
+```
+
+#### Distribuimos las clases
+
+```{r}
+prop.table(table(digit$label)) * 100
+```
+
+#### Convertir las etiquetas a factor
+
+```{r}
+digit$label <- factor(digit$label)
+```
+
+#### División de datos
+
+```{r}
+set.seed(1234)
+n <- nrow(digit) 
+test_size <- ceiling(0.2 * n) 
+indices <- sample(1:n, n, replace = FALSE) 
+```
+
+#### Crear conjuntos de entrenamiento y prueba
+
+```{r}
+dtrain <- digit[-indices[1:test_size], ]
+dtest <- digit[indices[1:test_size], ]
+```
+
+## Pruebas con diferentes modelos
+
+### RPART
+
+Los árboles de decisión son ideales para problemas de clasificación como
+el reconocimiento de dígitos debido a su capacidad para dividir los
+datos en reglas claras basadas en las características. Esto permite
+identificar patrones importantes, como variaciones en píxeles
+específicos que distinguen un dígito de otro. Además, son fáciles de
+interpretar y rápidos de entrenar.
+
+La precisión obtenida es 61,5%
+
+Además, se visualiza el árbol con fancyRpartPlot para interpretar las
+decisiones del modelo y se genera un gráfico de barras que muestra la
+importancia relativa de las variables, destacando cuáles influyen más en
+las predicciones. Esto facilita tanto la evaluación del rendimiento como
+la comprensión del modelo.
+
+```{r}
+arbol <- rpart(label ~ ., data = dtrain, method = "class")
+
+predicciones_arbol <- predict(arbol, newdata = dtest, type = "class")
+
+conf_matrix_arbol <- table(Predicted = predicciones_arbol, Actual = dtest$label)
+
+precision_arbol <- sum(diag(conf_matrix_arbol)) / sum(conf_matrix_arbol)
+
+cat("Precisión del Random Forest con 5 árboles:", precision_arbol, "\n")
+
+fancyRpartPlot(arbol)
+
+barplot(arbol$variable.importance, main = "Importancia de las Variables", 
+        col = "skyblue", las = 2)
+
+```
+
+### Random Forest
+
+El código entrena dos modelos de Random Forest con 10 y 5 árboles,
+respectivamente, utilizando el conjunto de datos de entrenamiento.
+Luego, se realizan predicciones sobre el conjunto de prueba y se calcula
+la precisión de cada modelo comparando las etiquetas predichas con las
+reales mediante una matriz de confusión.
+
+Además, se visualiza la importancia de las variables en el modelo con 10
+árboles y se compara gráficamente la precisión de ambos modelos, lo que
+permite evaluar cómo el número de árboles influye en el rendimiento del
+Random Forest.
+
+Las precisiones obtenidas son 84,3% para diez arboles y 77,9% para
+cinco.
+
+```{r}
+forest10 <- randomForest(label ~ ., data = dtrain, ntree = 10, nodesize = 50)
+
+pred_rf10 <- predict(forest10, newdata = dtest)
+conf_matrix_rf10 <- table(Predicted = pred_rf10, Actual = dtest$label)
+precision_rf10 <- sum(diag(conf_matrix_rf10)) / sum(conf_matrix_rf10)
+
+cat("Precisión del Random Forest con 10 árboles:", precision_rf10, "\n")
+
+forest5 <- randomForest(label ~ ., data = dtrain, ntree = 5, nodesize = 50)
+
+pred_rf5 <- predict(forest5, newdata = dtest)
+conf_matrix_rf5 <- table(Predicted = pred_rf5, Actual = dtest$label)
+precision_rf5 <- sum(diag(conf_matrix_rf5)) / sum(conf_matrix_rf5)
+
+cat("Precisión del Random Forest con 5 árboles:", precision_rf5, "\n")
+
+varImpPlot(forest10, main = "Importancia de Variables (10 árboles)")
+
+varImpPlot(forest5, main = "Importancia de Variables (5 árboles)")
+
+barplot(
+  c(precision_rf10, precision_rf5),
+  names.arg = c("10 Árboles", "5 Árboles"),
+  col = c("skyblue", "lightgreen"),
+  main = "Comparación de Precisión",
+  ylim = c(0, 1),
+  ylab = "Precisión"
+)
+
+```
+
+### SVM
+
+```{r}
+# Crear versiones temporales de los datos de entrenamiento y prueba
+dtrain_temp <- dtrain[, !sapply(dtrain, function(x) length(unique(x)) == 1)]
+dtest_temp <- dtest[, colnames(dtrain_temp)]
+
+# Verificar si hay suficientes variables después de eliminar las constantes
+if (ncol(dtrain_temp) > 1) {
+  
+  # Entrenar el modelo SVM
+  svm_model <- ksvm(label ~ ., data = dtrain_temp, kernel = "polydot", kpar = list(degree = 3), cross = 3)
+  
+  # Realizar predicciones
+  pred_svm <- predict(svm_model, dtest_temp)
+  
+  # Matriz de confusión y precisión
+  conf_matrix_svm <- table(Predicted = pred_svm, Actual = dtest_temp$label)
+  precision_svm <- sum(diag(conf_matrix_svm)) / sum(conf_matrix_svm)
+  cat("Precisión del modelo SVM:", precision_svm, "\n")
+  
+  # Visualizar la matriz de confusión
+  confusionMatrix(conf_matrix_svm)
+  
+  # Visualizar el modelo si hay solo dos características
+  if (ncol(dtrain_temp) == 3) {
+    plot(svm_model, data = dtrain_temp)
+  }
+} else {
+  cat("No hay suficientes variables para entrenar el modelo después de eliminar las constantes.\n")
+}
+```
+
+### Bagging
+
+```{r}
+# Entrenamiento del modelo de Bagging
+bag_model <- bagging(label ~ ., data = dtrain, nbagg = 100)
+
+# Predicción en el conjunto de prueba
+pred_bag <- predict(bag_model, dtest)
+
+# Matriz de confusión y cálculo de precisión
+conf_bag <- table(Predicted = pred_bag, Actual = dtest$label)
+cat("Precisión Bagging:", sum(diag(conf_bag)) / sum(conf_bag), "\n")
+```
+
+### K-Vecinos más Cercanos (KNN)
+
+```{r}
+  train_labels <- dtrain$label
+  train_data <- dtrain[, -1]
+  test_labels <- dtest$label
+  test_data <- dtest[, -1]
+  pred_knn <- knn(train = train_data, test = test_data, cl = train_labels, k = 5)
+  conf_knn <- table(Predicted = pred_knn, Actual = test_labels)
+  cat("Precisión KNN:", sum(diag(conf_knn)) / sum(conf_knn), "\n")
+```
+
+### XGBoost
+
+```{r}
+  # Preprocesar los datos para XGBoost
+  dtrain_xgb <- as.matrix(dtrain[, -1])  # Convertir los datos de entrenamiento a matriz
+  dtest_xgb <- as.matrix(dtest[, -1])    # Convertir los datos de prueba a matriz
+  
+  # Convertir las etiquetas en formato adecuado para XGBoost
+  dtrain_label <- as.numeric(dtrain$label) - 1  # Ajuste para XGBoost (empieza en 0)
+  dtest_label <- as.numeric(dtest$label) - 1
+  
+  # Crear los objetos xgb.DMatrix
+  dtrain_xgb_matrix <- xgb.DMatrix(data = dtrain_xgb, label = dtrain_label)
+  dtest_xgb_matrix <- xgb.DMatrix(data = dtest_xgb, label = dtest_label)
+  
+  # Entrenar el modelo XGBoost
+  xgb_model <- xgboost(data = dtrain_xgb_matrix, nrounds = 50, objective = "multi:softmax", num_class = length(unique(dtrain$label)))
+  
+  # Realizar predicciones
+  pred_xgb <- predict(xgb_model, dtest_xgb_matrix)
+  pred_xgb <- as.factor(pred_xgb)
+  
+  # Matriz de confusión y precisión
+  conf_xgb <- table(Predicted = pred_xgb, Actual = dtest$label)
+  cat("Precisión XGBoost:", sum(diag(conf_xgb)) / sum(conf_xgb), "\n")
+```
+
+### TEST
+
+#### Rotación de la imagen para su representación
+
+```{r}
+rotate_image <- function(image_matrix) { 
+  t(apply(image_matrix, 2, rev)) 
+}
+```
+
+#### Selección aleatoria de un dígito
+
+```{r}
+sample_idx <- sample(1:nrow(dtest), 1) 
+test_sample <- dtest[sample_idx, ] 
+actual_label <- test_sample$label
+```
+
+# Funcion para predicciones de los modelos
+
+```{r}
+predict_and_plot <- function(model, model_name) {
+  test_sample_features <- test_sample[, -1]
+  prediction <- predict(model, test_sample_features)
+  
+  # Representación gráfica del dígito
+  image_matrix <- matrix(as.numeric(as.vector(test_sample_features)), 
+                         nrow = 28, ncol = 28, byrow = TRUE)
+  image(rotate_image(image_matrix), 
+        main = paste(model_name, "- Real:", actual_label, "Pred:", prediction))
+}
+```
+
+# Modelos
+
+```{r}
+# El modelo con mejor precisión
+predict_and_plot(svm_model, "SVM")
+
+```
